@@ -112,7 +112,6 @@ def run_critic(articles: List[Dict], seen_topics: List[str]) -> List[Dict]:
     )
 
     try:
-        raise RuntimeError("TEMP: skip API for test")
         raw = _call_with_retry(prompt)
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         results = json.loads(raw)

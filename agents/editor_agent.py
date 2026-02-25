@@ -114,7 +114,6 @@ def run_editor(articles: List[Dict]) -> Tuple[List[Dict], str]:
     )
 
     try:
-        raise RuntimeError("TEMP: skip API for test")
         raw = _call_with_retry(prompt)
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         result = json.loads(raw)
