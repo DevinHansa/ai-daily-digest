@@ -102,13 +102,10 @@ def _call_with_retry(prompt: str, retries: int = 4) -> str:
 def run_editor(articles: List[Dict]) -> Tuple[List[Dict], str]:
     """
     Curate the final digest from critic-approved articles.
-    Returns (final_articles, big_picture_summary).
-    Falls back to top-N by score if Gemini unavailable.
     """
     if not articles:
         return [], "No AI news found for today."
 
-    # Pass up to 20 candidates to the editor (it will pick the best MAX_ARTICLES_PER_DIGEST)
     candidates = articles[:20]
 
     prompt = _EDITOR_PROMPT_TEMPLATE.format(

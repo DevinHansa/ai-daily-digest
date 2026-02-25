@@ -98,15 +98,7 @@ def _call_with_retry(prompt: str, retries: int = 4) -> str:
 
 
 def run_critic(articles: List[Dict], seen_topics: List[str]) -> List[Dict]:
-    """
-    Score and annotate articles. Returns the same list with added fields:
-      - score (int)
-      - is_duplicate_topic (bool)
-      - topic_keywords (str)
-      - critic_note (str)
-      - category (str)
-    Falls back to keyword scoring if Gemini unavailable.
-    """
+    """Score and annotate articles."""
     if not articles:
         return []
 
