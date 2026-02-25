@@ -130,13 +130,23 @@ def run_critic(articles: List[Dict], seen_topics: List[str]) -> List[Dict]:
 
     except Exception as e:
         logger.warning(f"[Critic] Gemini unavailable ({e}). Using keyword fallback scoring…")
-        # Fallback: use pre-score from keyword matching
+        # Fallback: use pre-score and simple keyword dedup
         for a in articles:
+            text = (a.get("title", "") + " " + a.get("summary", "")).lower()
+            text_words = set([w for w in text.replace("-", " ").split() if len(w) > 4])
+            
+            is_dup = False
+            for st in seen_topics:
+                st_words = set([w.lower() for w in st.split() if len(w) > 4])
+                if st_words and len(st_words.intersection(text_words)) >= 2:
+                    is_dup = True
+                    break
+
             ps = a.get("_prescore", 0)
             a["score"] = min(ps + 4, 9)
-            a["is_duplicate_topic"] = False
-            a["topic_keywords"] = ""
-            a["critic_note"] = ""
+            a["is_duplicate_topic"] = is_dup
+            a["topic_keywords"] = " ".join(list(text_words)[:3]) if not is_dup else ""
+            a["critic_note"] = "[Fallback] Keyword scored."
             a.setdefault("category", "Other")
 
     # Filter out duplicates, sort by score
