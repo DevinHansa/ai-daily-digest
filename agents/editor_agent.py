@@ -1,14 +1,13 @@
 """
 agents/editor_agent.py — Final editorial curation and summary writing.
 
-The Editor Agent receives the Critic's top-scored articles and uses ONE Gemini call to:
-  1. Select the final 10 best articles ensuring category diversity
-     (at least: 1 News, 1 Research, 1 Product — no single category dominates)
-  2. Write a polished, insightful 3-sentence TL;DR for each
-  3. Write a "Today's Big Picture" 2-sentence executive briefing for the email header
-  4. Ensure the digest tells a coherent story about the current state of AI
+The Editor Agent uses one Gemini call to:
+  1. Select the best N articles ensuring category diversity
+  2. Write engaging, specific TL;DRs with real facts and numbers
+  3. Write "why it matters" impact notes
+  4. Generate a "Today's Big Picture" executive summary
 
-Falls back gracefully if Gemini is unavailable.
+Falls back to prescore-based selection with clean messaging if Gemini is unavailable.
 """
 
 import os
@@ -25,42 +24,56 @@ from config import MAX_ARTICLES_PER_DIGEST
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
 
-_EDITOR_MODEL = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    generation_config={"temperature": 0.4, "response_mime_type": "application/json"},
-)
+_EDITOR_MODEL = None
 
-_EDITOR_PROMPT_TEMPLATE = """You are the Chief Editor of the world's most concise and trusted daily AI briefing. Your audience are busy AI engineers and researchers who want only the highest-signal updates.
 
-**Your job:**
-1. Select the best {max_articles} articles from the list below
-2. Ensure diversity: include at least 1 News story, 1 Research paper, 1 Product/company update
-3. Write a sharp 3-sentence TL;DR per selected article (specific facts, numbers, model names — no vague generalities)
-4. Write a "big_picture" field: a 2-sentence executive briefing summarizing today's overall AI landscape
+def _get_model():
+    global _EDITOR_MODEL
+    if _EDITOR_MODEL is None:
+        _EDITOR_MODEL = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            generation_config={"temperature": 0.5, "response_mime_type": "application/json"},
+        )
+    return _EDITOR_MODEL
 
-**Return a JSON object with this exact structure:**
+
+# ── Optimized Editor Prompt ──────────────────────────────────────────────────
+_EDITOR_PROMPT = """You are the Chief Editor of "AI Daily" — the briefing that top AI engineers actually read.
+
+YOUR VOICE: Authoritative but accessible. Think Bloomberg Terminal meets Hacker News. No corporate jargon, no filler, no "exciting times ahead" platitudes.
+
+TASK:
+1. Select exactly {max_articles} articles from the candidates below
+2. Ensure diversity: include research, product launches, AND industry/business news
+3. Write each TL;DR as 2-3 punchy sentences with SPECIFIC details (model names, dollar figures, benchmark scores, company names — never vague)
+4. Write a "why_it_matters" for each: ONE bold sentence about real-world impact
+5. Write "big_picture": A compelling 2-sentence overview that ties today's stories together into a narrative
+
+STYLE RULES FOR TL;DRs:
+- BAD: "A major AI company released a new model that shows improvements."
+- GOOD: "Anthropic's Claude 3.5 Sonnet scores 88.7% on HumanEval, up from 84.9%, while cutting inference costs by 40%. The model also adds native tool use and 200K context."
+
+RETURN THIS EXACT JSON:
 {{
-  "big_picture": "<2-sentence overview of today's AI developments>",
+  "big_picture": "<2-sentence narrative tying today's stories together>",
   "articles": [
     {{
       "index": <original index from input>,
-      "tldr": "<3 specific, insightful sentences>",
-      "why_it_matters": "<one bold sentence on real-world impact>",
-      "category": "<News | Research | Product Launch | Policy/Legal | Funding | Tool/Library | Opinion>"
+      "tldr": "<2-3 specific, fact-dense sentences>",
+      "why_it_matters": "<One bold sentence on real-world impact>",
+      "category": "<Research | Product Launch | Funding | Policy | Tool/Library | Industry News | Opinion>"
     }}
   ]
 }}
 
-Only include {max_articles} articles in the output array. Prioritize score but ensure diversity.
-Articles with is_duplicate_topic=true should NOT be selected unless there's no alternative.
-
----
-Candidate articles (pre-scored by Critic Agent):
+CANDIDATES (pre-scored by Critic):
 {articles}
 
-Return ONLY valid JSON. No markdown fences."""
+Return ONLY valid JSON. No markdown fences. Exactly {max_articles} articles."""
 
 
 def _format_for_editor(articles: List[Dict]) -> str:
@@ -69,52 +82,62 @@ def _format_for_editor(articles: List[Dict]) -> str:
         score = a.get("score", a.get("relevance_score", 0))
         lines.append(
             f"[{i}] SCORE:{score}/10 | CATEGORY:{a.get('category','?')} | "
-            f"SOURCE:{a.get('source','')} | DUPLICATE:{a.get('is_duplicate_topic', False)}"
+            f"SOURCE:{a.get('source','')}"
         )
         lines.append(f"    TITLE: {a.get('title', '')}")
         if a.get("critic_note"):
-            lines.append(f"    CRITIC'S NOTE: {a['critic_note']}")
-        if a.get("people_mentioned"):
-            lines.append(f"    KEY PEOPLE: {', '.join(a['people_mentioned'])}")
-        lines.append(f"    SUMMARY: {a.get('summary', '')[:300]}")
+            lines.append(f"    CRITIC NOTE: {a['critic_note']}")
+        lines.append(f"    SUMMARY: {a.get('summary', '')[:350]}")
         lines.append("")
     return "\n".join(lines)
 
 
-def _call_with_retry(prompt: str, retries: int = 4) -> str:
+def _call_gemini(prompt: str, retries: int = 3) -> str:
+    model = _get_model()
     for attempt in range(retries):
         try:
-            response = _EDITOR_MODEL.generate_content(prompt)
+            response = model.generate_content(prompt)
             return response.text
         except Exception as e:
-            err = str(e)
-            if "429" in err or "quota" in err.lower() or "rate" in err.lower():
-                wait = 30 * (attempt + 1)
-                logger.warning(f"[Editor] Rate-limited (attempt {attempt+1}/{retries}). Waiting {wait}s…")
+            err = str(e).lower()
+            if "429" in err or "quota" in err or "rate" in err:
+                wait = 20 * (attempt + 1)
+                logger.warning(f"[Editor] Rate-limited (attempt {attempt+1}). Waiting {wait}s…")
                 time.sleep(wait)
             else:
                 logger.warning(f"[Editor] Attempt {attempt+1} failed: {e}")
                 if attempt < retries - 1:
-                    time.sleep(10)
-    raise RuntimeError("Editor Agent: Gemini API failed after all retries")
+                    time.sleep(5)
+    raise RuntimeError("Editor Agent: Gemini failed after retries")
+
+
+def _generate_fallback_big_picture(articles: List[Dict]) -> str:
+    """Generate a professional big_picture from article titles — no 'Gemini unavailable' leaks."""
+    titles = [a.get("title", "") for a in articles[:3] if a.get("title")]
+    if len(titles) >= 2:
+        return (
+            f"Today's top stories span {titles[0][:60]} and {titles[1][:60]}. "
+            f"Read on for {len(articles)} curated updates shaping the AI landscape."
+        )
+    return f"Today's digest features {len(articles)} developments across the AI ecosystem."
 
 
 def run_editor(articles: List[Dict]) -> Tuple[List[Dict], str]:
     """
-    Curate the final digest from critic-approved articles.
+    Curate the final digest. Returns (final_articles, big_picture_summary).
     """
     if not articles:
         return [], "No AI news found for today."
 
     candidates = articles[:20]
 
-    prompt = _EDITOR_PROMPT_TEMPLATE.format(
+    prompt = _EDITOR_PROMPT.format(
         max_articles=MAX_ARTICLES_PER_DIGEST,
         articles=_format_for_editor(candidates),
     )
 
     try:
-        raw = _call_with_retry(prompt)
+        raw = _call_gemini(prompt)
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         result = json.loads(raw)
 
@@ -130,16 +153,14 @@ def run_editor(articles: List[Dict]) -> Tuple[List[Dict], str]:
             article["tldr"] = item.get("tldr", article.get("summary", "")[:280])
             article["why_it_matters"] = item.get("why_it_matters", "")
             article["category"] = item.get("category", article.get("category", "Other"))
-            # Merge score as relevance_score for the email composer
             article["relevance_score"] = article.get("score", article.get("relevance_score", 7))
             final.append(article)
 
-        logger.info(f"[Editor] Final selection: {len(final)} articles | Big Picture written")
+        logger.info(f"[Editor] Gemini selected {len(final)} articles with Big Picture")
         return final, big_picture
 
     except Exception as e:
         logger.warning(f"[Editor] Gemini unavailable ({e}). Using fallback selection…")
-        # Fallback: top N by score with basic TL;DR
         fallback = []
         for a in candidates[:MAX_ARTICLES_PER_DIGEST]:
             a = dict(a)
@@ -148,14 +169,6 @@ def run_editor(articles: List[Dict]) -> Tuple[List[Dict], str]:
             a["relevance_score"] = a.get("score", a.get("relevance_score", 6))
             fallback.append(a)
 
-        # Generate a professional-sounding big picture from article sources
-        sources = list(set(a.get("source", "") for a in fallback if a.get("source")))[:4]
-        source_str = ", ".join(sources[:3])
-        if len(sources) > 3:
-            source_str += f" and {len(sources) - 3} more"
-        big_picture = (
-            f"Today's digest covers {len(fallback)} developments across the AI landscape, "
-            f"with stories from {source_str}."
-        )
+        big_picture = _generate_fallback_big_picture(fallback)
         logger.info(f"[Editor] Fallback: {len(fallback)} articles selected")
         return fallback, big_picture

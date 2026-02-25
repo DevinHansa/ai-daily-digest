@@ -99,13 +99,13 @@ def main():
         logger.warning("⚠️  No articles fetched. Check network and feeds.")
         return
 
-    # ── STEP 2: MEMORY — URL dedup + load seen topics ─────────────────────────
-    logger.info("🧠 STEP 2 — Checking memory…")
-    from processor.memory import filter_new_articles, get_seen_topics
+    # ── STEP 2: MEMORY — URL dedup ─────────────────────────────────────────────
+    logger.info("🧠 STEP 2 — Checking URL memory…")
+    from processor.memory import filter_new_articles
 
     if not args.force:
         all_articles, skipped = filter_new_articles(all_articles)
-        logger.info(f"    {len(all_articles)} new articles (skipped {skipped} already seen)")
+        logger.info(f"    {len(all_articles)} new articles (skipped {skipped} already seen URLs)")
     else:
         logger.info("    Skipping URL dedup (--force)")
 
@@ -113,8 +113,15 @@ def main():
         logger.info("✅ Nothing new since the last digest. No email sent.")
         return
 
-    seen_topics = get_seen_topics()
-    logger.info(f"    {len(seen_topics)} topics in memory (won't repeat)")
+    # ── STEP 2.5: SEMANTIC DEDUP — Vector similarity check ────────────────────
+    logger.info("🔬 STEP 2.5 — Semantic dedup (vector memory)…")
+    from processor.vector_memory import filter_similar
+    all_articles, sem_filtered = filter_similar(all_articles)
+    logger.info(f"    {len(all_articles)} articles after semantic dedup ({sem_filtered} blocked as too similar)")
+
+    if not all_articles:
+        logger.info("✅ All articles are repeats of recent stories. No email sent.")
+        return
 
     # ── STEP 3: PRE-SCORE — Keyword ranking (no API cost) ─────────────────────
     logger.info("🔑 STEP 3 — Keyword pre-scoring…")
@@ -127,7 +134,7 @@ def main():
     # ── STEP 4: CRITIC AGENT ──────────────────────────────────────────────────
     logger.info("🔍 STEP 4 — Critic Agent scoring…")
     from agents.critic_agent import run_critic
-    critic_output = run_critic(candidates, seen_topics)
+    critic_output = run_critic(candidates)
     logger.info(f"    {len(critic_output)} articles passed Critic Agent")
 
     if not critic_output:
@@ -171,7 +178,13 @@ def main():
         with open(preview_path, "w", encoding="utf-8") as f:
             f.write(html)
         logger.info(f"💾 HTML preview saved to: {preview_path}")
-        logger.info("✅ Dry run complete. No email sent.")
+
+        # Save to vector memory even on dry run so next dry-run tests dedup
+        from processor.vector_memory import save_articles
+        save_articles(final_articles)
+        from processor.memory import save_urls
+        save_urls(final_articles)
+        logger.info("✅ Dry run complete. No email sent. (Memory updated for dedup testing)")
         return
 
     # ── STEP 7: SEND EMAIL ────────────────────────────────────────────────────
@@ -182,10 +195,11 @@ def main():
     if success:
         # ── STEP 8: SAVE TO MEMORY ────────────────────────────────────────────
         logger.info("💾 STEP 8 — Saving to memory…")
-        if not args.force:
-            from processor.memory import save_digest
-            save_digest(final_articles)
-        logger.info("✅ Digest sent! Articles and topics saved to memory.")
+        from processor.vector_memory import save_articles
+        from processor.memory import save_urls
+        save_articles(final_articles)
+        save_urls(final_articles)
+        logger.info("✅ Digest sent! Articles saved to vector memory.")
     else:
         logger.error("❌ Email send failed. Memory NOT updated — will retry next run.")
         sys.exit(1)
