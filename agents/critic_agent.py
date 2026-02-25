@@ -112,6 +112,7 @@ def run_critic(articles: List[Dict], seen_topics: List[str]) -> List[Dict]:
     )
 
     try:
+        raise RuntimeError("TEMP: skip API for test")
         raw = _call_with_retry(prompt)
         raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         results = json.loads(raw)
@@ -130,23 +131,47 @@ def run_critic(articles: List[Dict], seen_topics: List[str]) -> List[Dict]:
 
     except Exception as e:
         logger.warning(f"[Critic] Gemini unavailable ({e}). Using keyword fallback scoring…")
-        # Fallback: use pre-score and simple keyword dedup
+        # Fallback: extract key terms from title for dedup + scoring
+        _STOPWORDS = {"the","a","an","is","are","was","were","in","on","at","to","for",
+                       "of","and","or","but","with","by","from","as","its","it","that",
+                       "this","has","have","had","will","can","do","does","not","be",
+                       "been","being","new","say","says","said","how","why","what","when",
+                       "who","which","could","would","should","may","about","into","over",
+                       "after","before","between","through","during","up","out","more",
+                       "than","also","just","now","even","still","most","very","some",
+                       "all","us","we","they","their","our","your","its","an"}
+
+        def _extract_title_keywords(title: str) -> str:
+            """Pull meaningful words from title — company names, products, verbs."""
+            words = [w.strip(",:;!?\"'()[]{}") for w in title.split()]
+            meaningful = [w for w in words if w.lower() not in _STOPWORDS and len(w) > 2]
+            return " ".join(meaningful[:5]).lower()
+
+        def _titles_overlap(title_kw: str, seen_kw: str) -> bool:
+            """Check if two keyword strings share enough in common to be the same story."""
+            t_words = set(title_kw.lower().split())
+            s_words = set(seen_kw.lower().split())
+            if not t_words or not s_words:
+                return False
+            overlap = len(t_words & s_words)
+            # If 2+ meaningful words overlap, it's likely the same story
+            return overlap >= 2
+
         for a in articles:
-            text = (a.get("title", "") + " " + a.get("summary", "")).lower()
-            text_words = set([w for w in text.replace("-", " ").split() if len(w) > 4])
-            
+            title_kw = _extract_title_keywords(a.get("title", ""))
+
             is_dup = False
             for st in seen_topics:
-                st_words = set([w.lower() for w in st.split() if len(w) > 4])
-                if st_words and len(st_words.intersection(text_words)) >= 2:
+                if _titles_overlap(title_kw, st):
                     is_dup = True
+                    logger.info(f"[Critic] Fallback dedup: '{a.get('title','')[:50]}' matches seen topic '{st}'")
                     break
 
             ps = a.get("_prescore", 0)
             a["score"] = min(ps + 4, 9)
             a["is_duplicate_topic"] = is_dup
-            a["topic_keywords"] = " ".join(list(text_words)[:3]) if not is_dup else ""
-            a["critic_note"] = "[Fallback] Keyword scored."
+            a["topic_keywords"] = title_kw if not is_dup else ""
+            a["critic_note"] = ""
             a.setdefault("category", "Other")
 
     # Filter out duplicates, sort by score

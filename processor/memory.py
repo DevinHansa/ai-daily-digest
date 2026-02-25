@@ -74,6 +74,23 @@ def filter_new_articles(articles: List[Dict]) -> Tuple[List[Dict], int]:
     return new, skipped
 
 
+_STOPWORDS = {"the","a","an","is","are","was","were","in","on","at","to","for",
+               "of","and","or","but","with","by","from","as","its","it","that",
+               "this","has","have","had","will","can","do","does","not","be",
+               "been","being","new","say","says","said","how","why","what","when",
+               "who","which","could","would","should","may","about","into","over",
+               "after","before","between","through","during","up","out","more",
+               "than","also","just","now","even","still","most","very","some",
+               "all","us","we","they","their","our","your","an"}
+
+
+def _extract_keywords_from_title(title: str) -> str:
+    """Extract meaningful keywords from a title (company names, products, etc)."""
+    words = [w.strip(",:;!?\"'()[]{}") for w in title.split()]
+    meaningful = [w for w in words if w.lower() not in _STOPWORDS and len(w) > 2]
+    return " ".join(meaningful[:5]).lower()
+
+
 def save_digest(articles: List[Dict]):
     """
     After a successful send, save:
@@ -90,7 +107,12 @@ def save_digest(articles: List[Dict]):
     for a in articles:
         if a.get("url"):
             seen_urls.add(a["url"])
+
+        # Use existing topic_keywords, or extract from title if missing
         kw = a.get("topic_keywords", "").strip()
+        if not kw or len(kw.split()) < 2:
+            kw = _extract_keywords_from_title(a.get("title", ""))
+
         if kw and kw not in existing_kw:
             seen_topics.append({"keywords": kw, "date": now_str})
             existing_kw.add(kw)

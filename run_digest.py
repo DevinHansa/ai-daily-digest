@@ -103,11 +103,11 @@ def main():
     logger.info("🧠 STEP 2 — Checking memory…")
     from processor.memory import filter_new_articles, get_seen_topics
 
-    if not args.force and not args.test_email:
+    if not args.force:
         all_articles, skipped = filter_new_articles(all_articles)
         logger.info(f"    {len(all_articles)} new articles (skipped {skipped} already seen)")
     else:
-        logger.info("    Skipping URL dedup (--test-email / --force)")
+        logger.info("    Skipping URL dedup (--force)")
 
     if not all_articles:
         logger.info("✅ Nothing new since the last digest. No email sent.")
