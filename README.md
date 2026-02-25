@@ -35,9 +35,9 @@ Open `e:\ai_news_digest\.env` and fill in:
 ```
 GMAIL_SENDER=your_gmail_address@gmail.com
 GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+DIGEST_RECIPIENT=recipient_email@gmail.com
+GEMINI_API_KEY=your_gemini_api_key
 ```
-
-> ⚠️ The Gemini API key and recipient email are already filled in.
 
 ### 4. Test the pipeline
 ```powershell
